@@ -1,0 +1,17 @@
+# Exclusión del entorno de PyCharm
+.idea/
+*.iml
+
+# Exclusión de entornos virtuales y cachés de Python
+.venv/
+__pycache__/
+
+# Exclusión de datos pesados (Para que el repositorio no colapse)
+data/
+*.npy
+*.csv
+*.pdb
+*.pml
+*.tiff
+*.pdf
+*.png
