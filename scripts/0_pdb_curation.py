@@ -13,6 +13,11 @@ warnings.filterwarnings("ignore", category=PDBConstructionWarning)
 
 class KinaseDatasetCurator:
     def __init__(self):
+        """
+        Initializes the curation environment, resolving absolute paths for the project
+        root and defining the structural matrix kinase domain (wt and mut) to be
+        downloaded and purified.
+        """
         # 1. Dynamic resolution of the project root
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(script_dir)
@@ -29,13 +34,10 @@ class KinaseDatasetCurator:
 
         # 4. 2x2 Experimental matrix (Strictly Homo sapiens)
         self.targets = {
-            # Axis A: c-Abl
-            "2HYY": ("A", "ABL1_WT"),
-            "4TWP": ("A", "ABL1_Mutant_T315I"),
-            # Axis B: EGFR
+            # Axis A: EGFR
             "1XKK": ("A", "EGFR_WT"),
             "2ITV": ("A", "EGFR_Mutant_L858R"),
-            # Axis C: BRAF
+            # Axis B: BRAF
             "4WO5": ("A", "BRAF_WT"),
             "4MNF": ("A", "BRAF_Mutant_V600E")
         }
@@ -55,7 +57,14 @@ class KinaseDatasetCurator:
                 f.write("Log of downloaded PDB files:\n")
 
     def download_pdb(self, pdb_id):
-        """Downloads the PDB using PDBList and renames the .ent extension to .pdb."""
+        """
+        Retrieves the specified crystallographic structure from the PDB
+        via FTP, standardizes its nomenclature and registers the transaction.
+
+        :param pdb_id: str (4-character alphanumeric PDB ID)
+
+        :return: str (local path to the downloaded PDB file)
+        """
         pdb_id = pdb_id.lower()
         download_dir = self.dirs["raw"]
         pdbl = PDBList(verbose=False)
@@ -90,7 +99,17 @@ class KinaseDatasetCurator:
             return None
 
     def purify_and_extract_fasta(self, pdb_path, pdb_id, chain_info):
-        """Removes ligands/water and extracts the FASTA sequence."""
+        """
+        Parses the raw PDB file, isolates the specific target chain, strictly filters out
+        solvent molecules and heteroatoms and extracts the pure continuous AA sequence
+        into a FASTA file.
+
+        :param pdb_path: str (path to raw PDB file)
+        :param pdb_id: str (4-character alphanumeric PDB ID)
+        :param chain_info: tuple (target chain letter and biological state label)
+
+        :return: None
+        """
         target_chain, biological_state = chain_info
         pdb_id_upper = pdb_id.upper()
         processed_path = os.path.join(self.dirs["processed"], f"{pdb_id_upper}_{biological_state}_clean.pdb")

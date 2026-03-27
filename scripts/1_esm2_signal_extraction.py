@@ -2,9 +2,11 @@ import torch
 import esm
 import logging
 import numpy as np
+from sympy.physics.units import permille
 from tqdm import tqdm
 import os
 import pandas as pd
+import traceback
 
 # Configure strict logging for execution audit
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(asctime)s - %(message)s', datefmt='%H:%M:%S')
@@ -13,14 +15,15 @@ def initialize_plm_environment(model_name: str = "esm2_t33_650M_UR50D"):
     """
     Loads the ESM-2 Transformer architecture, freezes its weights for deterministic
     inference and dynamically allocates it to the optimal hardware device.
+
     :param model_name: str, ID of pre-trained ESM-2 Transformer architecture.
+
     :return: Tuple:
             - model: torch.nn.Module (frozen PyTorch model)
             - alphabet: esm.data.Alphabet (vocabulary dictionary)
             - batch_converter: callable (function to tokenize string sequence)
             - device: torch.device (hardware device (CUDA/CPU))
     """
-
     logging.info(f"Loading ESM-2 Transformer architecture: {model_name}")
 
     # 1. Load pre-trained weights and vocabulary alphabet from Meta AI
@@ -47,11 +50,13 @@ def extract_raw_attention_tensor(model, batch_converter, device, sequence_id: st
     """
     Tokenizes the input sequence, performs a forward pass through the PLM and
     extracts the raw multi-head self-attention tensor.
+
     :param model: torch.nn.Module (initialized and frozen ESM-2 model)
     :param batch_converter: callable (tokenizer associated with alphabet)
     :param device: torch.device (hardware device (CUDA/CPU))
     :param sequence_id: str (ID of sequence)
     :param sequence: str (AA sequence)
+
     :return: np.ndarray (4D NumPy array of shape: Layers, Heads, Seq_Len +2, Seq_Len + 2)
     """
     logging.info(f"Preparing sequence '{sequence_id}' (Length: {len(sequence)} AA) for tokenization.")
@@ -81,38 +86,49 @@ def extract_raw_attention_tensor(model, batch_converter, device, sequence_id: st
 
 def compute_monte_carlo_pvalue(attention_matrix: np.ndarray, target_idx: int, permutations: int = 1000) -> float:
     """
+    Executes fast Monte Carlo to determine if the attention towards
+    the target coordinate significantly differs from the average attention
+    of random anatomical residues within the same structure.
 
-    :param attention_matrix:
-    :param target_idx:
-    :param permutations:
-    :return:
+    :param attention_matrix: np.ndarray (2D attention matrix: Seq_Len, Seq_Len)
+    :param target_idx: int (positional index of the target amino acid)
+    :param permutations: int (number of iterations for the simulation)
+
+    :return: float (empirical p-value)
     """
-    # 1. Extract target signal vector (excluding self-attention)
-    target_vector = np.copy(attention_matrix[target_idx])
-    target_vector[target_idx] = np.nan
-    observed_mean = np.nanmean(target_vector)
+    seq_len = attention_matrix.shape[0]
+
+    # 1. Extract target signal
+    target_vector = attention_matrix[target_idx, :]
+    observed_mean = (np.sum(target_vector) - target_vector[target_idx]) / (seq_len - 1)
 
     # 2. Population pool
-    off_diagonal_mask = ~np.eye(attention_matrix.shape[0], dtype=bool)
-    population_pool = attention_matrix[off_diagonal_mask]
+    non_target_position = np.array([i for i in range(seq_len) if i != target_idx])
 
-    # 3. Vectorized stochastic simulation
+    # 3. Vectorized random sampling of indices (O(1) extraction)
+    random_sites = np.random.choice(non_target_position, size=permutations, replace=True)
+
+    # 4. Compute random means
     random_means = np.zeros(permutations)
     for i in range(permutations):
-        # Sampling without replacement to simulate random vectors of identical length
-        randon_sample = np.random.choice(population_pool, size=len(target_vector)-1, replace=False)
-        random_means[i] = np.mean(randon_sample)
+        site = random_sites[i]
+        vec = attention_matrix[site, :]
+        mean_val = (np.sum(vec) - vec[site]) / (seq_len - 1)
+        random_means[i] = mean_val
 
-    # 4. Calculation of the conditional probability
+    # 5. Calculation of conditional probability
     p_value = np.sum(random_means >= observed_mean) / permutations
     return float(p_value)
 
 def compute_impact_score(attention_matrix: np.ndarray, target_idx: int) -> float:
     """
+    Quantifies the effect size (Z-score) oof the signal at the target residue
+    relative to the thermodynamic distribution of the packing background.
 
-    :param attention_matrix:
-    :param target_idx:
-    :return:
+    :param attention_matrix: np.ndarray (2D attention matrix: Seq_Len, Seq_Len)
+    :param target_idx: int (positional index of the target amino acid)
+
+    :return: float (population standard deviation value: impact score)
     """
     # 1. Extract target signal vector (excluding self-attention)
     target_vector = np.copy(attention_matrix[target_idx, :])
@@ -139,12 +155,15 @@ def distill_allosteric_signal(raw_attention: np.ndarray, target_idx: int,
                               p_value_threshold: float = 0.01,
                               impact_score_threshold: float = 1.0) -> list:
     """
+    Iterates over the 660 attention matrices, applies statistical filters and
+    isolates the heads encoding long-range epistasis.
 
-    :param raw_attention:
-    :param target_idx:
-    :param p_value_threshold:
-    :param impact_score_threshold:
-    :return:
+    :param raw_attention: np.ndarray (4D tensor: Layers, Heads, Seq_Len, Seq_Len)
+    :param target_idx: int (mutation index adjusted for <cls> token)
+    :param p_value_threshold: float (alpha level)
+    :param impact_score_threshold: float (minimun Z-score)
+
+    :return: list of dicts (metadata of the statistical attention heads)
     """
     num_layers, num_heads, _, _ = raw_attention.shape
     validate_heads = []
@@ -178,14 +197,26 @@ def distill_allosteric_signal(raw_attention: np.ndarray, target_idx: int,
 def aggregate_and_export_signal (raw_attention: np.ndarray, validated_heads: list,
                                  sequence: str, sequence_id: str, esm_target_idx: int,
                                  output_dir: str = "data/attention_results"):
+    """
+    Averages the statistically attention matrices and exports the isolated 1D
+    allosteric signal vector to a CSV format.
 
+    :param raw_attention: nd.ndarray ( original 4D tensor from ESM-2)
+    :param validated_heads: list of dicts (indices of surviving heads)
+    :param sequence: str (AA sequence)
+    :param sequence_id: str (ID file)
+    :param esm_target_idx: int (coordinate of mutation + 1)
+    :param output_dir: str (relative path for data export)
+
+    :return:
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     if not validated_heads:
         logging.warning(f"No validated heads to aggregate for {sequence_id}")
         return
 
-    seq_len_with_tokens = raw_attentions.shape[2]
+    seq_len_with_tokens = raw_attention.shape[2]
     accumulated_matrix = np.zeros((seq_len_with_tokens, seq_len_with_tokens))
 
     # 1. Tensor aggregation: statistically significant heads
@@ -200,7 +231,7 @@ def aggregate_and_export_signal (raw_attention: np.ndarray, validated_heads: lis
     attention_vector = accumulated_matrix[esm_target_idx, 1:-1]
 
     # 3. Export
-    df_heads = pd.DataFrame(accumulated_matrix)
+    df_heads = pd.DataFrame(validated_heads)
     heads_path = os.path.join(output_dir, f"{sequence_id}_head_statistics.csv")
     df_heads.to_csv(heads_path, index=False)
 
@@ -241,6 +272,7 @@ if __name__ == "__main__":
         # 3. Aggregation and export
         aggregate_and_export_signal(raw_tensor, surviving_heads, abl1_seq, abl1_id, esm_target_idx)
 
+        logging.info("--- Pipeline Completed ---")
+
     except Exception as e:
-        import traceback
         logging.error(f"Execution failed. Technical traceback:\n{traceback.format_exc()}")
