@@ -32,29 +32,38 @@ class KinaseDatasetCurator:
             "fasta": os.path.join(self.data_dir, "fasta_sequences")
         }
 
-        # 4. 2x2 Experimental matrix (Strictly Homo sapiens)
+        # 4. Experimental matrix
+
         self.targets = {
-            # Axis A: EGFR
-            "1XKK": ("A", "EGFR_WT"),
-            "2ITV": ("A", "EGFR_Mutant_L858R"),
-            # Axis B: BRAF
-            "4WO5": ("A", "BRAF_WT"),
-            "4MNF": ("A", "BRAF_Mutant_V600E")
+            "SRC": {
+                "pdb_id": "2SRC", # Resolution: 1.5 A (Homo sapiens)
+                "chain": "A",
+                "mutations": {
+                    "WT": [],
+                    "E310A_Active": [("E", 310, "A")],
+                    "T338G_Inhibitory": [("T", 338, "G")]
+                }
+            },
+            "EGFR": {
+                "pdb_id": "3POZ", # Resolution: 1.5 A (Homo sapiens)
+                "chain": "A",
+                "mutations": {
+                    "WT": [],
+                    "L858R": [("L", 858, "R")],
+                    "L858R_T790M_Epistatic": [("L", 858, "R"), ("T", 790, "M")]
+                }
+            }
         }
         self._setup_directories()
 
     def _setup_directories(self):
-        """Generates the directory tree from scratch in the project root."""
+        """
+        Generates the directory tree from scratch in the project root.
+        """
         os.makedirs(self.data_dir, exist_ok=True)
-        logging.info(f"Master directory verified/created at: {self.data_dir}")
-
         for name, path in self.dirs.items():
             os.makedirs(path, exist_ok=True)
-
-        list_file = os.path.join(self.dirs["raw"], "PDB_files_list.txt")
-        if not os.path.exists(list_file):
-            with open(list_file, "w") as f:
-                f.write("Log of downloaded PDB files:\n")
+        logging.info(f"Directory structure: {self.dirs}")
 
     def download_pdb(self, pdb_id):
         """
@@ -66,20 +75,17 @@ class KinaseDatasetCurator:
         :return: str (local path to the downloaded PDB file)
         """
         pdb_id = pdb_id.lower()
-        download_dir = self.dirs["raw"]
         pdbl = PDBList(verbose=False)
-
-        expected_pdb_path = os.path.join(download_dir, f"{pdb_id}.pdb")
+        expected_pdb_path = os.path.join(self.dirs["raw"], f"{pdb_id}.pdb")
 
         if os.path.exists(expected_pdb_path):
-            logging.info(f"File {pdb_id}.pdb already exists locally. Skipping download.")
+            logging.info(f"[PDB] {pdb_id.upper()} already exists. Skipping download.")
             return expected_pdb_path
 
-        logging.info(f"Starting download for {pdb_id}...")
         file_path = pdbl.retrieve_pdb_file(
             pdb_code=pdb_id,
             file_format="pdb",
-            pdir=download_dir,
+            pdir=self.dirs["raw"],
             overwrite=True
         )
 
@@ -87,36 +93,38 @@ class KinaseDatasetCurator:
             if file_path.endswith('.ent'):
                 try:
                     os.rename(file_path, expected_pdb_path)
-                    with open(os.path.join(download_dir, "PDB_files_list.txt"), "a") as f:
+                    list_file = os.path.join(self.dirs["raw"], "PDB_files_list.txt")
+                    with open(list_file, "a") as f:
                         f.write(f"{pdb_id.upper()}\n")
+
+                    logging.info(f"[PDB] Successfully downloaded and renamed {pdb_id.upper()}.")
                     return expected_pdb_path
+
                 except Exception as e:
-                    logging.error(f"Error renaming {file_path}: {str(e)}")
+                    logging.error(f"[PDB Error] Error renaming {file_path}: {str(e)}")
                     return file_path
             return file_path
         else:
-            logging.error(f"Critical failure downloading: {pdb_id}")
+            logging.error(f"[PDB Critical] Critical failure downloading: {pdb_id.upper()}")
             return None
 
-    def purify_and_extract_fasta(self, pdb_path, pdb_id, chain_info):
+    def scaffold_and_sequences(self, kinase_name, config):
         """
-        Parses the raw PDB file, isolates the specific target chain, strictly filters out
-        solvent molecules and heteroatoms and extracts the pure continuous AA sequence
-        into a FASTA file.
+        Purifies the 3D scaffold and extracts the FASTA sequences
+        for the WT and mutant variants.
 
-        :param pdb_path: str (path to raw PDB file)
-        :param pdb_id: str (4-character alphanumeric PDB ID)
-        :param chain_info: tuple (target chain letter and biological state label)
+        :param kinase_name: str (e.g., 'SRC', 'EGFR')
+        :param config: dict (target configuration: PDB ID, chain and mutation)
 
         :return: None
         """
-        target_chain, biological_state = chain_info
-        pdb_id_upper = pdb_id.upper()
-        processed_path = os.path.join(self.dirs["processed"], f"{pdb_id_upper}_{biological_state}_clean.pdb")
-        fasta_path = os.path.join(self.dirs["fasta"], f"{pdb_id_upper}_{biological_state}.fasta")
+        pdb_id = config["pdb_id"].upper()
+        target_chain = config["chain"]
+        raw_path = os.path.join(self.dirs["raw"], f"{pdb_id.lower()}.pdb")
+        clean_path = os.path.join(self.dirs["processed"], f"{kinase_name}_scaffold_clean.pdb")
 
         parser = PDBParser()
-        structure = parser.get_structure(pdb_id_upper, pdb_path)
+        structure = parser.get_structure(pdb_id, raw_path)
 
         class ChainAndProteinSelect(Select):
             def accept_chain(self, chain):
@@ -125,32 +133,49 @@ class KinaseDatasetCurator:
             def accept_residue(self, residue):
                 return 1 if residue.id[0] == ' ' and PDB.is_aa(residue, standard=True) else 0
 
+        # 1. Purify spatial scaffold
         io = PDBIO()
         io.set_structure(structure)
-        io.save(processed_path, ChainAndProteinSelect())
-        logging.info(f"Purified structure generated: {processed_path}")
+        io.save(clean_path, ChainAndProteinSelect())
+        logging.info(f"[3D Scaffold] Purified and saved for {kinase_name}.")
 
-        clean_structure = parser.get_structure(f"{pdb_id_upper}_clean", processed_path)
-        target_chain_obj = clean_structure[0][target_chain]
-        sequence = "".join([seq1(residue.resname) for residue in target_chain_obj])
+        # 2. Extract sequence and map residue coordinates
+        clean_structure = parser.get_structure(f"{kinase_name}_clean", clean_path)
+        chain_obj = clean_structure[0][target_chain]
+        res_map = {res.id[1]: seq1(res.resname) for res in chain_obj}
+        res_indices = list(res_map.keys())
 
-        with open(fasta_path, "w") as f:
-            f.write(f">{pdb_id_upper}_{biological_state}_Homo_sapiens\n")
-            for i in range(0, len(sequence), 80):
-                f.write(f"{sequence[i:i + 80]}\n")
+        # 3. In silico mutagenesis to generate differential FASTA files
+        for mut_name, mutations in config["mutations"].items():
+            fasta_path = os.path.join(self.dirs["fasta"], f"{kinase_name}_{mut_name}.fasta")
 
-        logging.info(f"FASTA extracted for {biological_state}. Length: {len(sequence)} aa.")
+            mutated_sequence = res_map.copy()
+            for (aa_orig, pos, aa_mut) in mutations:
+                if pos in mutated_sequence and mutated_sequence[pos] == aa_orig:
+                    mutated_sequence[pos] = aa_mut
+                    logging.info(
+                        f"[Mutagenesis] {kinase_name} {mut_name}: {aa_orig}{pos}{aa_mut} successfully applied.")
+                else:
+                    logging.warning(
+                        f"[Mutagenesis Error] Position {pos} in {kinase_name} does not match native {aa_orig}.")
+
+            # Assemble the final linear string
+            final_seq = "".join([mutated_sequence[idx] for idx in res_indices])
+
+            with open(fasta_path, "w") as f:
+                f.write(f">{kinase_name}_{mut_name}\n")
+                # Format sequence length conforming to FASTA 80-character strict limit
+                for i in range(0, len(final_seq), 80):
+                    f.write(f"{final_seq[i:i + 80]}\n")
+
+            logging.info(f"[FASTA] Generated {kinase_name}_{mut_name} (Length: {len(final_seq)} aa).")
 
     def execute_pipeline(self):
         logging.info("--- INITIATING STRUCTURAL CURATION PIPELINE ---")
-        for pdb_id, chain_info in self.targets.items():
-            logging.info(f"Processing target: {pdb_id} ({chain_info[1]})")
-
-            pdb_path = self.download_pdb(pdb_id)
-
-            if pdb_path:
-                self.purify_and_extract_fasta(pdb_path, pdb_id, chain_info)
-
+        for kinase, config in self.targets.items():
+            logging.info(f"\nProcessing target system: {kinase}")
+            if self.download_pdb(config["pdb_id"]):
+                self.scaffold_and_sequences(kinase, config)
         logging.info("--- PIPELINE SUCCESSFULLY COMPLETED ---")
 
 
