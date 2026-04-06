@@ -148,10 +148,11 @@ class AllostericNetworkAnalyzer:
         self.logger.info(f"STAGE 1: Executing Spatial Curation for {project_name} ({pdb_id}_{chain})")
         clean_path = os.path.join(self.pdb_dir, f"{project_name}_scaffold_clean.pdb")
 
-        if os.path.exists(clean_path): #Bypass structural processing if the curated scaffold already exists
+        if os.path.exists(clean_path):
+            self.logger.info("   -> Curated scaffold already exists. Bypassing spatial processing.")
             return clean_path
 
-        pdbl = PDBList(pdb=self.pdb_dir) # Initialize the RCSB PDB retrieval interface
+        pdbl = PDBList(pdb=self.pdb_dir)
         raw_pdb_path = pdbl.retrieve_pdb_file(pdb_id, pdir=self.pdb_dir, file_format="pdb")
         parser = PDBParser(QUIET=True)
 
@@ -173,17 +174,17 @@ class AllostericNetworkAnalyzer:
                               offset: int) -> None:
         self.logger.info(f"STAGE 2: Generating Genetic Microstates for {project_name}")
 
-        wt_path = os.path.join(self.fasta_dir, f"{project_name}_WT.fasta") # WT sequence as energetic baseline
+        wt_path = os.path.join(self.fasta_dir, f"{project_name}_WT.fasta")
         with open(wt_path, "w") as f:
             f.write(f">{project_name}_WT\n{canonical_seq}\n")
 
-        for state_name, mutations in mutational_dict.items(): # Compute perturbed states
+        for state_name, mutations in mutational_dict.items():
             seq_list = list(canonical_seq)
 
             for mut in mutations:
-                wt_aa, pos, mut_aa = mut[0], int(mut[1:-1]), mut[-1] # Parse standard mutation format (e.g. 'L', 858 , 'R')
-                rel_idx = pos - 1 - offset # Apply offset
-                seq_list[rel_idx] = mut_aa # Introduce the mutation
+                wt_aa, pos, mut_aa = mut[0], int(mut[1:-1]), mut[-1]
+                rel_idx = pos - 1 - offset
+                seq_list[rel_idx] = mut_aa
 
             mut_seq = "".join(seq_list)
 
@@ -204,17 +205,16 @@ class AllostericNetworkAnalyzer:
             os.path.exists(os.path.join(self.tensor_dir, f"Jacobian_{os.path.basename(fp).replace('.fasta', '')}.npy"))
             for fp in fasta_files)
         if all_exist:
-            self.logger.info("All epistatic tensors already exist. Skipping ESM-2 model initialization.")
+            self.logger.info("   -> All epistatic tensors already exist. Skipping ESM-2 model initialization.")
             return
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"Loading PLM onto hardware: {device}...")
+        self.logger.info(f"   -> Loading PLM onto hardware: {device}...")
 
         # Initialize the ESM-2 Transformer (650M parameter variant, 33 layer)
         model_instance, alphabet_instance = esm.pretrained.esm2_t33_650M_UR50D()
         model_instance.eval()
         model_instance.to(device)
-        # Batch converter tokenizes the FASTA sequence into numerical inputs
         batch_converter_func = alphabet_instance.get_batch_converter()
         num_layers_int: int = 33
 
@@ -224,7 +224,7 @@ class AllostericNetworkAnalyzer:
             if os.path.exists(out_tensor):
                 continue
 
-            self.logger.info(f"Computing Deep Mutational Scan for: {filename}...")
+            self.logger.info(f"   -> Computing Deep Mutational Scan for: {filename}...")
             with open(file_path, 'r') as f:
                 seq = "".join([line.strip() for line in f.readlines() if not line.startswith(">")])
 
@@ -247,11 +247,10 @@ class AllostericNetworkAnalyzer:
                 # Extract and serialize the internal attention maps for Stage 7
                 attention_maps = results["attentions"]
                 torch.save(attention_maps, os.path.join(self.tensor_dir, f"Attention_{filename}.pt"))
-                self.logger.info(f"   -> Attention maps extracted and serialized: Attention_{filename}.pt")
+                self.logger.info(f"      -> Attention maps extracted and serialized: Attention_{filename}.pt")
 
             # In Silico Mutagenesis (Alanine Scanning)
             for i in tqdm(range(seq_len), desc=f"Scanning {filename}", unit="residue"):
-                # Mutate to Alanine (or Glycine)
                 mut_aa = 'A' if seq[i] != 'A' else 'G'
                 mut_seq = seq[:i] + mut_aa + seq[i + 1:]
                 _, _, mut_tokens = batch_converter_func([("MUT", mut_seq)])
@@ -262,9 +261,8 @@ class AllostericNetworkAnalyzer:
                     logits_mut = res_mut["logits"][0, 1:seq_len + 1, :].cpu().numpy()
                     probs_mut = np.exp(logits_mut) / np.sum(np.exp(logits_mut), axis=-1, keepdims=True)
 
-                # Compute Jensen-Shannon Divergence (JSD) to quantify evolutionary covariance
-                # The 1e-10 constant prevents log(0) computational underflow errors
-                # Assign the symmetric divergence score to the Jacobian sensitivity tensor
+                # Compute Jensen-Shannon Divergence (JSD) to quantify evolutionary covariance.
+                # The 1e-10 constant prevents log(0) computational underflow errors.
                 m = 0.5 * (probs_wt + probs_mut)
                 kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1)
                 kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1)
@@ -276,14 +274,13 @@ class AllostericNetworkAnalyzer:
     # STAGE 4, 5 & 6: MST, CGO, AND QUANTITATIVE ANALYTICS
     # -----------------------------------------------------------------
     def _extract_mst(self, project_name: str, offset: int) -> None:
-        self.logger.info("STAGE 4: Extracting Maximum Spanning Tree Topologies (Absolute Indexing & AA Extraction)")
+        self.logger.info("STAGE 4: Extracting Maximum Spanning Tree Topologies (Absolute Indexing)")
         for file_path in glob.glob(os.path.join(self.tensor_dir, f"Jacobian_{project_name}_*.npy")):
             state = os.path.basename(file_path).replace(f"Jacobian_{project_name}_", "").replace(".npy", "")
 
-            # Retrieve exact FASTA sequence mapped to this tensor state
             fasta_path = os.path.join(self.fasta_dir, f"{project_name}_{state}.fasta")
             if not os.path.exists(fasta_path):
-                self.logger.error(f"Cannot extract AA names: Sequence file {fasta_path} missing.")
+                self.logger.error(f"   -> Cannot extract AA names: Sequence file {fasta_path} missing.")
                 continue
 
             with open(fasta_path, 'r') as f:
@@ -293,10 +290,10 @@ class AllostericNetworkAnalyzer:
 
             # Symmetrize the tensor to construct an undirected graph. This assumes the
             # biophysical principle of allosteric reciprocity (the energetic coupling
-            # pathway from node i to j is identical to j to i in equilibrium)
+            # pathway from node i to j is identical to j to i in equilibrium).
             sym_jacobian = (jacobian + jacobian.T) / 2.0
 
-            # Eliminate self-loops to prevent artificial inflation of node centrality
+            # Eliminate self-loops to prevent artificial inflation of node centrality.
             np.fill_diagonal(sym_jacobian, 0.0)
 
             graph = nx.Graph()
@@ -307,9 +304,7 @@ class AllostericNetworkAnalyzer:
                     graph.add_edge(i, j, weight=sym_jacobian[i, j])
 
             if graph.number_of_edges() > 0:
-                # Extract the unbranched subgraph that maximizes epistatic information flow
                 mst = nx.maximum_spanning_tree(graph, weight='weight')
-                # Compute Betweenness Centrality to isolate structural bottlenecks
                 centrality = nx.betweenness_centrality(mst, normalized=True)
 
                 nodes_data = [{"Residue_PDB": k + 1 + offset,
@@ -414,7 +409,6 @@ class AllostericNetworkAnalyzer:
         for file_path in glob.glob(os.path.join(self.tensor_dir, f"Jacobian_{project_name}_*.npy")):
             state = os.path.basename(file_path).replace(f"Jacobian_{project_name}_", "").replace(".npy", "")
 
-            # Retrieve exact FASTA sequence
             fasta_path = os.path.join(self.fasta_dir, f"{project_name}_{state}.fasta")
             with open(fasta_path, 'r') as f:
                 seq = "".join([line.strip() for line in f.readlines() if not line.startswith(">")])
@@ -424,7 +418,6 @@ class AllostericNetworkAnalyzer:
             for target in target_residues:
                 target_rel_idx = target - 1 - offset
                 if 0 <= target_rel_idx < jacobian.shape[0]:
-                    # Extract the specific 1D vector corresponding to the target node's sensitivity
                     df_target = pd.DataFrame({"Residue_PDB": np.arange(jacobian.shape[1]) + 1 + offset,
                                               "Amino_Acid": list(seq),
                                               "Epistatic_Coupling_JSD": jacobian[target_rel_idx, :]})
@@ -476,11 +469,12 @@ class AllostericNetworkAnalyzer:
         impacts, snrs, pvals = [], [], []
 
         total_heads = num_layers * num_heads
-        with tqdm(total=total_heads, desc="Analyzing Attention Heads", unit="head") as pbar:
+        with tqdm(total=total_heads, desc="Analyzing Absolute Attention", unit="head") as pbar:
             for layer_idx in range(num_layers):
                 layer_impacts, layer_snrs, layer_pvals = [], [], []
                 for head_idx in range(num_heads):
                     attention = attention_maps[layer_idx, head_idx]
+
                     # Apply a conservative probability threshold (>30%) to filter out
                     # diffuse background attention and isolate highly confident couplings.
                     mask = attention > threshold
@@ -540,10 +534,10 @@ class AllostericNetworkAnalyzer:
             threshold: float = 0.05
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Calcula la sensibilidad alostérica diferencial aislando la perturbación
-        dinámica del ruido de plegamiento basal mediante operaciones tensoriales vectorizadas.
+        Computes differential allosteric sensitivity by isolating the dynamic perturbation
+        from the basal folding noise using vectorized tensor operations.
         """
-        # Sustracción algebraica y valor absoluto del tensor de atención
+        # Algebraic subtraction and absolute value extraction of the attention tensor
         delta_attention = torch.abs(attention_maps_mut[0] - attention_maps_wt[0])
         n_allo_sites = len(allo_sites_relative)
         num_layers, num_heads, seq_len, _ = delta_attention.shape
@@ -552,50 +546,50 @@ class AllostericNetworkAnalyzer:
         snrs = torch.zeros((num_layers, num_heads))
         pvals = torch.ones((num_layers, num_heads))
 
-        # Definición del espacio de fondo (residuos no alostéricos)
+        # Definition of the background space (non-allosteric residues)
         non_allo_list = [i for i in range(seq_len) if i not in allo_sites_relative]
         non_allo_tensor = torch.tensor(non_allo_list, dtype=torch.long)
         allo_sites_tensor = torch.tensor(allo_sites_relative, dtype=torch.long)
 
         total_heads = num_layers * num_heads
 
-        with tqdm(total=total_heads, desc="Analizando Atención Diferencial (Vectorizado)", unit="head") as pbar:
+        with tqdm(total=total_heads, desc="Analyzing Differential Attention (Vectorized)", unit="head") as pbar:
             for layer_idx in range(num_layers):
                 for head_idx in range(num_heads):
                     attention_diff = delta_attention[layer_idx, head_idx]
 
-                    # Generación de la máscara booleana basada en el umbral
+                    # Generation of the boolean mask based on the threshold
                     mask = attention_diff > threshold
 
-                    # Vectorización Nivel 1: Sumatorio direccional de atención enmascarada para toda la secuencia
-                    # Esto genera un tensor 1D con la atención total recibida por cada residuo
+                    # Level 1 Vectorization: Directional summation of masked attention across the entire sequence.
+                    # Generates a 1D tensor with the total attention received by each residue.
                     col_sums = torch.sum(attention_diff * mask, dim=0)
 
-                    # Cálculo directo de la atención acoplada a la red alostérica
+                    # Direct computation of the attention coupled to the allosteric network
                     w_allo = torch.sum(col_sums[allo_sites_tensor]).item()
 
-                    # Extracción del pool de sumatorios del ruido de fondo (residuos no diana)
+                    # Extraction of the background noise summation pool (non-target residues)
                     background_sums = col_sums[non_allo_tensor]
 
-                    # Vectorización Nivel 2: Simulación de Monte Carlo en el espacio tensorial
-                    # Muestreo simultáneo de índices aleatorios para las 1000 iteraciones
+                    # Level 2 Vectorization: Monte Carlo simulation within the tensor space.
+                    # Simultaneous sampling of random indices for the n_trials.
                     rand_idx = torch.randint(
                         low=0,
                         high=len(non_allo_list),
                         size=(n_random_trials, n_allo_sites)
                     )
 
-                    # Extracción y sumatorio transversal para generar la distribución nula completa
+                    # Extraction and transversal summation to generate the complete null distribution
                     random_w_tensor = torch.sum(background_sums[rand_idx], dim=1)
 
                     expected_random = torch.mean(random_w_tensor).item()
                     std_random = torch.std(random_w_tensor).item()
 
-                    # Inferencia de las métricas de impacto
+                    # Inference of impact metrics
                     impact = w_allo / expected_random if expected_random > 0 else 0.0
                     snr = (w_allo - expected_random) / (std_random + 1e-10)
 
-                    # Contraste de hipótesis (t-test de una cola)
+                    # Hypothesis testing (one-tailed t-test)
                     t_stat, p_value = ttest_1samp(
                         random_w_tensor.cpu().numpy(),
                         w_allo,
@@ -605,8 +599,8 @@ class AllostericNetworkAnalyzer:
                     if np.isnan(p_value):
                         p_value = 1.0
 
-                    # CORRECCIÓN: Casting explícito a float nativo de Python
-                    # Esto evita la colisión de tipos entre numpy.float32 y torch.FloatTensor
+                    # Explicit casting to Python native float.
+                    # Prevents type collision between scipy numpy.float32 and PyTorch tensors.
                     impacts[layer_idx, head_idx] = float(impact)
                     snrs[layer_idx, head_idx] = float(snr)
                     pvals[layer_idx, head_idx] = float(p_value)
@@ -616,24 +610,24 @@ class AllostericNetworkAnalyzer:
         return impacts, snrs, pvals
 
     def _run_attention_analytics(self, project_name: str, offset: int, target_residues: List[int]) -> None:
-        self.logger.info("STAGE 7: Ejecutando Analítica de Atención Estática y Diferencial")
+        self.logger.info("STAGE 7: Executing Static and Differential Attention Analytics")
         if not target_residues:
-            self.logger.warning("No se definieron residuos diana. Omitiendo la Etapa 7.")
+            self.logger.warning("   -> No target residues defined. Skipping Stage 7.")
             return
 
         att_file_pattern = os.path.join(self.tensor_dir, f"Attention_{project_name}_*.pt")
         attention_files = glob.glob(att_file_pattern)
 
-        # 1. Localización y carga del tensor basal estructural (Wild Type)
+        # 1. Location and loading of the basal structural tensor (Wild Type)
         wt_file_path = os.path.join(self.tensor_dir, f"Attention_{project_name}_WT.pt")
         has_wt_baseline = os.path.exists(wt_file_path)
         attention_maps_wt = None
 
         if has_wt_baseline:
             attention_maps_wt = torch.load(wt_file_path, weights_only=True)
-            self.logger.info("Tensor estructural basal (WT) cargado para normalización diferencial.")
+            self.logger.info("   -> Basal structural tensor (WT) loaded for differential normalization.")
         else:
-            self.logger.warning("No se halló el estado WT. Solo se computarán los estadísticos absolutos.")
+            self.logger.warning("   -> WT state not found. Only absolute statistics will be computed.")
 
         for att_file in attention_files:
             state = os.path.basename(att_file).replace(f"Attention_{project_name}_", "").replace(".pt", "")
@@ -643,11 +637,11 @@ class AllostericNetworkAnalyzer:
             valid_sites = [s for s in allo_sites_relative if 0 <= s < seq_len]
 
             if not valid_sites:
-                self.logger.warning(f"Residuos diana fuera de los límites para el estado {state}. Omitiendo.")
+                self.logger.warning(f"   -> Target residues out of bounds for state {state}. Skipping.")
                 continue
 
-            # 2. Análisis Estático Absoluto (preserva los archivos independientes)
-            self.logger.info(f"   -> Computando sensibilidad atencional absoluta para {state}...")
+            # 2. Absolute Static Analysis (preserves independent files)
+            self.logger.info(f"   -> Computing absolute attention sensitivity for {state}...")
             imp, snrs, pvals = self._compute_attention_impact(attention_maps, valid_sites)
 
             rows_abs = []
@@ -666,9 +660,9 @@ class AllostericNetworkAnalyzer:
             df_abs.to_csv(os.path.join(self.analytics_dir, f"Attention_Sensitivity_{project_name}_{state}.csv"),
                           index=False)
 
-            # 3. Análisis Dinámico Diferencial (exclusivo para microestados mutacionales)
+            # 3. Differential Dynamic Analysis (exclusive to mutational microstates)
             if state != "WT" and has_wt_baseline:
-                self.logger.info(f"   -> Computando perturbación atencional diferencial para {state} frente a WT...")
+                self.logger.info(f"   -> Computing differential attention perturbation for {state} vs WT...")
                 imp_diff, snrs_diff, pvals_diff = self._compute_differential_attention_impact(
                     attention_maps_wt, attention_maps, valid_sites
                 )
@@ -687,7 +681,8 @@ class AllostericNetworkAnalyzer:
                 df_diff = pd.DataFrame(rows_diff).sort_values(by="delta_snr", ascending=False)
                 df_diff.to_csv(os.path.join(self.analytics_dir, f"Differential_Attention_{project_name}_{state}.csv"),
                                index=False)
-                self.logger.info(f"   -> Métricas diferenciales estabilizadas y guardadas para {state}.")
+                self.logger.info(f"      -> Differential metrics stabilized and saved for {state}.")
+
 
 # =====================================================================
 # USAGE TEMPLATE / INDEPENDENT EXECUTION BLOCK
