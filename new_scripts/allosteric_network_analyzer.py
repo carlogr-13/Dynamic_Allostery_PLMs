@@ -20,7 +20,6 @@ import os
 import glob
 import logging
 import warnings
-import random
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -458,89 +457,14 @@ class AllostericNetworkAnalyzer:
             threshold: float = 0.3
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Calculates allosteric sensitivity of PLM attention heads.
-        Algorithm logic derived from Dong et al. (2024).
-        Incorporates progress monitoring for the massive Monte Carlo tensor evaluation.
+        Calculates absolute allosteric sensitivity of PLM attention heads.
+        Algorithm logic derived from Dong et al. (2024), fully optimized via
+        continuous vectorized tensor operations and sampling without replacement.
         """
+        target_device = attention_maps.device
         attention_maps = attention_maps[0]
         n_allo_sites = len(allo_sites_relative)
         num_layers, num_heads, seq_len, _ = attention_maps.shape
-
-        impacts, snrs, pvals = [], [], []
-
-        total_heads = num_layers * num_heads
-        with tqdm(total=total_heads, desc="Analyzing Absolute Attention", unit="head") as pbar:
-            for layer_idx in range(num_layers):
-                layer_impacts, layer_snrs, layer_pvals = [], [], []
-                for head_idx in range(num_heads):
-                    attention = attention_maps[layer_idx, head_idx]
-
-                    # Apply a conservative probability threshold (>30%) to filter out
-                    # diffuse background attention and isolate highly confident couplings.
-                    mask = attention > threshold
-
-                    # Integrate the total attention weight flowing into the allosteric sites
-                    w_allo = sum(
-                        torch.sum(attention[:, site][mask[:, site]]).item()
-                        for site in allo_sites_relative
-                    )
-
-                    # Exclude actual allosteric sites from the background control pool
-                    non_allo_list: List[int] = [i for i in range(seq_len) if i not in allo_sites_relative]
-                    random_w_values = []
-
-                    # Monte Carlo loop to generate the null distribution of attention probability
-                    for _ in range(n_random_trials):
-                        random_sites = random.sample(non_allo_list, k=n_allo_sites)
-                        w_random = sum(
-                            torch.sum(attention[:, site][mask[:, site]]).item()
-                            for site in random_sites
-                        )
-                        random_w_values.append(w_random)
-
-                    expected_random = np.mean(random_w_values)
-                    std_random = np.std(random_w_values)
-
-                    # Compute the magnitude of allosteric focus versus random expectation
-                    impact = w_allo / expected_random if expected_random > 0 else 0
-
-                    # Compute Z-score equivalent (Signal-to-Noise Ratio)
-                    snr = (w_allo - expected_random) / (std_random + 1e-10)
-
-                    # Execute one-tailed t-test (H0: random distribution mean >= w_allo)
-                    t_stat, p_value = ttest_1samp(random_w_values, w_allo, alternative='less')
-
-                    if np.isnan(p_value):
-                        p_value = 1.0
-
-                    layer_impacts.append(impact)
-                    layer_snrs.append(snr)
-                    layer_pvals.append(p_value)
-
-                    pbar.update(1)
-
-                impacts.append(layer_impacts)
-                snrs.append(layer_snrs)
-                pvals.append(layer_pvals)
-
-        return torch.tensor(impacts), torch.tensor(snrs), torch.tensor(pvals)
-
-    @staticmethod
-    def _compute_differential_attention_impact(
-            attention_maps_wt: torch.Tensor,
-            attention_maps_mut: torch.Tensor,
-            allo_sites_relative: List[int],
-            n_random_trials: int = 1000,
-            threshold: float = 0.05
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Computes differential allosteric sensitivity by isolating the dynamic perturbation
-        from the basal folding noise using vectorized tensor operations.
-        """
-        # Algebraic subtraction and absolute value extraction of the attention tensor
-        delta_attention = torch.abs(attention_maps_mut[0] - attention_maps_wt[0])
-        n_allo_sites = len(allo_sites_relative)
-        num_layers, num_heads, seq_len, _ = delta_attention.shape
 
         impacts = torch.zeros((num_layers, num_heads))
         snrs = torch.zeros((num_layers, num_heads))
@@ -548,38 +472,37 @@ class AllostericNetworkAnalyzer:
 
         # Definition of the background space (non-allosteric residues)
         non_allo_list = [i for i in range(seq_len) if i not in allo_sites_relative]
-        non_allo_tensor = torch.tensor(non_allo_list, dtype=torch.long)
-        allo_sites_tensor = torch.tensor(allo_sites_relative, dtype=torch.long)
+
+        # Hardware synchronization: Instantiate tensors on the correct target device
+        non_allo_tensor = torch.tensor(non_allo_list, dtype=torch.long, device=target_device)
+        allo_sites_tensor = torch.tensor(allo_sites_relative, dtype=torch.long, device=target_device)
 
         total_heads = num_layers * num_heads
 
-        with tqdm(total=total_heads, desc="Analyzing Differential Attention (Vectorized)", unit="head") as pbar:
+        with tqdm(total=total_heads, desc="Analyzing Absolute Attention (Vectorized)", unit="head") as pbar:
             for layer_idx in range(num_layers):
                 for head_idx in range(num_heads):
-                    attention_diff = delta_attention[layer_idx, head_idx]
+                    attention = attention_maps[layer_idx, head_idx]
 
-                    # Generation of the boolean mask based on the threshold
-                    mask = attention_diff > threshold
+                    # Apply a conservative probability threshold (>30%) to filter out
+                    # diffuse background attention and isolate highly confident steric couplings.
+                    mask = attention > threshold
 
-                    # Level 1 Vectorization: Directional summation of masked attention across the entire sequence.
-                    # Generates a 1D tensor with the total attention received by each residue.
-                    col_sums = torch.sum(attention_diff * mask, dim=0)
+                    # Vectorization Level 1: Directional summation of masked attention
+                    col_sums = torch.sum(attention * mask, dim=0)
 
-                    # Direct computation of the attention coupled to the allosteric network
+                    # Direct computation of the attention coupled to the allosteric sites
                     w_allo = torch.sum(col_sums[allo_sites_tensor]).item()
 
-                    # Extraction of the background noise summation pool (non-target residues)
+                    # Extraction of the background noise summation pool
                     background_sums = col_sums[non_allo_tensor]
 
-                    # Level 2 Vectorization: Monte Carlo simulation within the tensor space.
-                    # Simultaneous sampling of random indices for the n_trials.
-                    rand_idx = torch.randint(
-                        low=0,
-                        high=len(non_allo_list),
-                        size=(n_random_trials, n_allo_sites)
-                    )
+                    # Vectorization Level 2: Monte Carlo simulation WITHOUT replacement.
+                    # Guarantees absolute statistical rigor by preventing duplicate indices.
+                    rand_weights = torch.rand(n_random_trials, len(non_allo_list), device=target_device)
+                    rand_idx = torch.argsort(rand_weights, dim=1)[:, :n_allo_sites]
 
-                    # Extraction and transversal summation to generate the complete null distribution
+                    # Transversal summation to generate the complete null distribution
                     random_w_tensor = torch.sum(background_sums[rand_idx], dim=1)
 
                     expected_random = torch.mean(random_w_tensor).item()
@@ -599,8 +522,88 @@ class AllostericNetworkAnalyzer:
                     if np.isnan(p_value):
                         p_value = 1.0
 
-                    # Explicit casting to Python native float.
-                    # Prevents type collision between scipy numpy.float32 and PyTorch tensors.
+                    # Explicit casting to Python native float
+                    impacts[layer_idx, head_idx] = float(impact)
+                    snrs[layer_idx, head_idx] = float(snr)
+                    pvals[layer_idx, head_idx] = float(p_value)
+
+                    pbar.update(1)
+
+        return impacts, snrs, pvals
+
+    @staticmethod
+    def _compute_differential_attention_impact(
+            attention_maps_wt: torch.Tensor,
+            attention_maps_mut: torch.Tensor,
+            allo_sites_relative: List[int],
+            n_random_trials: int = 1000
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Computes differential allosteric sensitivity by isolating the dynamic perturbation
+        from the basal folding noise using continuous vectorized tensor operations.
+        (Thresholding is explicitly omitted to preserve the thermodynamic noise distribution).
+        """
+        target_device = attention_maps_wt.device
+
+        # Algebraic subtraction and absolute value extraction of the attention tensor
+        delta_attention = torch.abs(attention_maps_mut[0] - attention_maps_wt[0])
+        n_allo_sites = len(allo_sites_relative)
+        num_layers, num_heads, seq_len, _ = delta_attention.shape
+
+        impacts = torch.zeros((num_layers, num_heads))
+        snrs = torch.zeros((num_layers, num_heads))
+        pvals = torch.ones((num_layers, num_heads))
+
+        # Definition of the background space (non-allosteric residues)
+        non_allo_list = [i for i in range(seq_len) if i not in allo_sites_relative]
+
+        # Hardware synchronization: Instantiate tensors on the correct target device
+        non_allo_tensor = torch.tensor(non_allo_list, dtype=torch.long, device=target_device)
+        allo_sites_tensor = torch.tensor(allo_sites_relative, dtype=torch.long, device=target_device)
+
+        total_heads = num_layers * num_heads
+
+        with tqdm(total=total_heads, desc="Analyzing Differential Attention (Continuous)", unit="head") as pbar:
+            for layer_idx in range(num_layers):
+                for head_idx in range(num_heads):
+                    attention_diff = delta_attention[layer_idx, head_idx]
+
+                    # Vectorization Level 1: Continuous directional summation.
+                    # Bypassing the boolean mask guarantees the preservation of natural variance (sigma > 0).
+                    col_sums = torch.sum(attention_diff, dim=0)
+
+                    # Direct computation of the attention coupled to the allosteric network
+                    w_allo = torch.sum(col_sums[allo_sites_tensor]).item()
+
+                    # Extraction of the background noise summation pool (non-target residues)
+                    background_sums = col_sums[non_allo_tensor]
+
+                    # Vectorization Level 2: Monte Carlo simulation within the continuous tensor space.
+                    # Stochastic sampling WITHOUT replacement to guarantee absolute statistical rigor.
+                    rand_weights = torch.rand(n_random_trials, len(non_allo_list), device=target_device)
+                    rand_idx = torch.argsort(rand_weights, dim=1)[:, :n_allo_sites]
+
+                    random_w_tensor = torch.sum(background_sums[rand_idx], dim=1)
+
+                    expected_random = torch.mean(random_w_tensor).item()
+                    std_random = torch.std(random_w_tensor).item()
+
+                    # Inference of impact metrics.
+                    # The 1e-10 regularizer now only acts on truly static heads (where delta is perfectly 0.0)
+                    impact = w_allo / expected_random if expected_random > 0 else 0.0
+                    snr = (w_allo - expected_random) / (std_random + 1e-10)
+
+                    # Hypothesis testing (one-tailed t-test)
+                    t_stat, p_value = ttest_1samp(
+                        random_w_tensor.cpu().numpy(),
+                        w_allo,
+                        alternative='less'
+                    )
+
+                    if np.isnan(p_value):
+                        p_value = 1.0
+
+                    # Explicit casting to Python native float
                     impacts[layer_idx, head_idx] = float(impact)
                     snrs[layer_idx, head_idx] = float(snr)
                     pvals[layer_idx, head_idx] = float(p_value)
@@ -640,9 +643,13 @@ class AllostericNetworkAnalyzer:
                 self.logger.warning(f"   -> Target residues out of bounds for state {state}. Skipping.")
                 continue
 
-            # 2. Absolute Static Analysis (preserves independent files)
+            # 2. Absolute Static Analysis (Applies probability thresholding to filter steric packing noise)
             self.logger.info(f"   -> Computing absolute attention sensitivity for {state}...")
-            imp, snrs, pvals = self._compute_attention_impact(attention_maps, valid_sites)
+            imp, snrs, pvals = self._compute_attention_impact(
+                attention_maps=attention_maps,
+                allo_sites_relative=valid_sites,
+                n_random_trials=1000
+            )
 
             rows_abs = []
             num_layers, num_heads = imp.shape
@@ -660,11 +667,14 @@ class AllostericNetworkAnalyzer:
             df_abs.to_csv(os.path.join(self.analytics_dir, f"Attention_Sensitivity_{project_name}_{state}.csv"),
                           index=False)
 
-            # 3. Differential Dynamic Analysis (exclusive to mutational microstates)
+            # 3. Differential Dynamic Analysis (Continuous tensor evaluation bypassing threshold constraints)
             if state != "WT" and has_wt_baseline:
-                self.logger.info(f"   -> Computing differential attention perturbation for {state} vs WT...")
+                self.logger.info(f"   -> Computing continuous differential attention perturbation for {state} vs WT...")
                 imp_diff, snrs_diff, pvals_diff = self._compute_differential_attention_impact(
-                    attention_maps_wt, attention_maps, valid_sites
+                    attention_maps_wt=attention_maps_wt,
+                    attention_maps_mut=attention_maps,
+                    allo_sites_relative=valid_sites,
+                    n_random_trials=1000
                 )
 
                 rows_diff = []
@@ -682,7 +692,6 @@ class AllostericNetworkAnalyzer:
                 df_diff.to_csv(os.path.join(self.analytics_dir, f"Differential_Attention_{project_name}_{state}.csv"),
                                index=False)
                 self.logger.info(f"      -> Differential metrics stabilized and saved for {state}.")
-
 
 # =====================================================================
 # USAGE TEMPLATE / INDEPENDENT EXECUTION BLOCK
