@@ -1,19 +1,18 @@
 """
-Allosteric Network Analyzer (ANA) & Attention Profiler
+Dynamic Allosteric PLM Analyzer
 ======================================================
 A fully integrated bioinformatic framework for the mapping of dynamic allostery
 using Protein Language Models (ESM-2) and Maximum Spanning Tree (MST) Graph Theory.
 
-This script encapsulates the complete 7-stage biophysical workflow:
 1. Spatial Scaffold Curation (PDB purification)
-2. Genetic Microstate Generation (canonical FASTA sequence & in silico mutagenesis)
+2. Genetic Microstate Generation (canonical FASTA sequence and in silico mutagenesis)
 3. Epistatic Inference Engine (ESM-2 Jacobian Tensors via JSD)
 4. MST Topological Extraction (Graph Centrality with absolute PDB indexing and AA mapping)
-5. High-Res CGO Topology Compilation (PyMOL rendering using Plasma colormap)
+5. High-Res CGO Topology Compilation (PyMOL rendering)
 6. Quantitative Analytics (Long-range epistasis and target sensitivity profiling)
 7. Attention Map Sensitivity (Extraction of PLM internal representations)
 
-Author: TFG Bioinformatics Pipeline
+Author: Carlos González Ruiz
 """
 
 import os
@@ -85,6 +84,7 @@ class AllostericNetworkAnalyzer:
         self.graph_dir: str = ""
         self.cgo_dir: str = ""
         self.analytics_dir: str = ""
+        self.plots_dir: str = ""
         self.current_offset: int = 0
 
     def _setup_directories(self, project_name: str, base_dir: Optional[str]) -> None:
@@ -94,10 +94,10 @@ class AllostericNetworkAnalyzer:
         if base_dir is None:
             current_script_dir = str(os.path.dirname(os.path.abspath(__file__)))
             safe_base_dir = os.path.abspath(os.path.join(current_script_dir, ".."))
+            self.root_dir = os.path.join(safe_base_dir, f"Data_{project_name}")
         else:
-            safe_base_dir = os.path.abspath(str(base_dir))
+            self.root_dir = os.path.abspath(str(base_dir))
 
-        self.root_dir = os.path.join(safe_base_dir, f"data_{project_name}")
         self.pdb_dir = os.path.join(self.root_dir, "processed_pdb")
         self.fasta_dir = os.path.join(self.root_dir, "fasta_sequences")
         self.tensor_dir = os.path.join(self.root_dir, "results")
@@ -105,8 +105,8 @@ class AllostericNetworkAnalyzer:
         self.cgo_dir = os.path.join(self.root_dir, "pymol_cgo_scripts")
         self.analytics_dir = os.path.join(self.root_dir, "quantitative_metrics")
 
-        for directory in [self.pdb_dir, self.fasta_dir, self.tensor_dir, self.graph_dir, self.cgo_dir,
-                          self.analytics_dir]:
+        for directory in [self.pdb_dir, self.fasta_dir, self.tensor_dir, self.graph_dir,
+                          self.cgo_dir, self.analytics_dir]:
             os.makedirs(directory, exist_ok=True)
 
         self.logger.info(f"Directory topology dynamically configured at: {self.root_dir}")
@@ -260,12 +260,12 @@ class AllostericNetworkAnalyzer:
                     logits_mut = res_mut["logits"][0, 1:seq_len + 1, :].cpu().numpy()
                     probs_mut = np.exp(logits_mut) / np.sum(np.exp(logits_mut), axis=-1, keepdims=True)
 
-                # Compute Jensen-Shannon Divergence (JSD) to quantify evolutionary covariance.
+                # Compute Jensen-Shannon Divergence (JSD) to quantify evolutionary covariance
                 # The 1e-10 constant prevents log(0) computational underflow errors.
                 m = 0.5 * (probs_wt + probs_mut)
-                kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1)
-                kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1)
-                jacobian[i, :] = 0.5 * (kl_wt_m + kl_mut_m)
+                kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1) #(ec. 2 for WT)
+                kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1) #(ec. 2 for mut)
+                jacobian[i, :] = 0.5 * (kl_wt_m + kl_mut_m) # (ec. 1)
 
             np.save(out_tensor, jacobian)
 
@@ -289,7 +289,7 @@ class AllostericNetworkAnalyzer:
 
             # Symmetrize the tensor to construct an undirected graph. This assumes the
             # biophysical principle of allosteric reciprocity (the energetic coupling
-            # pathway from node i to j is identical to j to i in equilibrium).
+            # pathway from node i to j is identical to j to i in equilibrium). (ec. 3)
             sym_jacobian = (jacobian + jacobian.T) / 2.0
 
             # Eliminate self-loops to prevent artificial inflation of node centrality.
@@ -304,7 +304,7 @@ class AllostericNetworkAnalyzer:
 
             if graph.number_of_edges() > 0:
                 mst = nx.maximum_spanning_tree(graph, weight='weight')
-                centrality = nx.betweenness_centrality(mst, normalized=True)
+                centrality = nx.betweenness_centrality(mst, normalized=True) # (ec. 4)
 
                 nodes_data = [{"Residue_PDB": k + 1 + offset,
                                "Amino_Acid": seq[k],
@@ -508,7 +508,7 @@ class AllostericNetworkAnalyzer:
                     expected_random = torch.mean(random_w_tensor).item()
                     std_random = torch.std(random_w_tensor).item()
 
-                    # Inference of impact metrics
+                    # Inference of impact metrics (ec. 5 and ec. 6)
                     impact = w_allo / expected_random if expected_random > 0 else 0.0
                     snr = (w_allo - expected_random) / (std_random + 1e-10)
 
@@ -545,7 +545,7 @@ class AllostericNetworkAnalyzer:
         """
         target_device = attention_maps_wt.device
 
-        # Algebraic subtraction and absolute value extraction of the attention tensor
+        # Algebraic subtraction and absolute value extraction of the attention tensor (ec. 7)
         delta_attention = torch.abs(attention_maps_mut[0] - attention_maps_wt[0])
         n_allo_sites = len(allo_sites_relative)
         num_layers, num_heads, seq_len, _ = delta_attention.shape
