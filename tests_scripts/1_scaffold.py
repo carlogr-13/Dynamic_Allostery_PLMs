@@ -92,7 +92,8 @@ class SpatialScaffoldCurator:
         # Structural targets maintaining the highly resolved PDBs specified in the experimental design
         self.targets: dict = {
             "SRC": {"pdb_id": "2SRC", "chain": "A"},
-            "EGFR": {"pdb_id": "3POZ", "chain": "A"}
+            "EGFR": {"pdb_id": "3POZ", "chain": "A"},
+            "ER": {"pdb_id": "2B23", "chain": "A"}
         }
 
     def _setup_directories(self) -> None:

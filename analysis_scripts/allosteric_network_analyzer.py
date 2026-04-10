@@ -12,7 +12,50 @@ using Protein Language Models (ESM-2) and Maximum Spanning Tree (MST) Graph Theo
 6. Quantitative Analytics (Long-range epistasis and target sensitivity profiling)
 7. Attention Map Sensitivity (Extraction of PLM internal representations)
 
-Author: Carlos González Ruiz
+ Example
+ -------
+from allosteric_network_analyzer import AllostericNetworkAnalyzer
+
+if __name__ == "__main__":
+    analyzer = AllostericNetworkAnalyzer()
+
+    # Define your biological parameters
+    analyzer.execute_pipeline(
+        project_name="Target_Name",         # e.g., "EGFR"
+        pdb_id="XXXX",                      # e.g., "2GS2"
+        chain="A",
+        canonical_sequence="SEQ...",        # Insert continuous 1D amino acid string
+        offset=0,                           # Shift to map 0-indexed array to PDB numbering
+        mutational_dict={
+            "Mutant_1": ["L858R"],          # In silico perturbations (Optional)
+        },
+        target_residues=[858, 790, 766],    # Nodes for directed epistatic & attention sensitivity
+        base_dir="."                        # Directory for data serialization
+        seed=42/None
+    )
+
+ Dependencies
+ ------------
+    - torch
+    - fair-esm
+    - numpy
+    - pandas
+    - scipy
+    - networkx
+    - biopython
+    - tqdm
+
+ Author
+ ------
+ Carlos González Ruiz
+
+ References
+ ----------
+ Dong et al. (2024). Allo-Allo: Data-efficient prediction of allosteric sites.
+ bioRxiv. DOI: https://doi.org/10.1101/2024.09.28.615583
+
+ GPCRAllostericAnalysis. https://github.com/jdlg-42/GPCRAllostericAnalysis
+
 """
 
 import os
@@ -87,6 +130,19 @@ class AllostericNetworkAnalyzer:
         self.plots_dir: str = ""
         self.current_offset: int = 0
 
+    def _set_deterministic_seed(self, seed: int = 42) -> None:
+        import random
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+
+        self.logger.info(f"Deterministic PRNG seed anchored globally at: {seed}")
+
     def _setup_directories(self, project_name: str, base_dir: Optional[str]) -> None:
         """
         Dynamically constructs the data topology in the project root directory.
@@ -114,17 +170,23 @@ class AllostericNetworkAnalyzer:
     def execute_pipeline(self, project_name: str, pdb_id: str, chain: str, canonical_sequence: str, offset: int,
                          mutational_dict: Optional[Dict[str, List[str]]] = None,
                          target_residues: Optional[List[int]] = None,
-                         base_dir: Optional[str] = None) -> None:
+                         base_dir: Optional[str] = None,
+                         seed: Optional[int] = 42) -> None:
         """
         Triggers the absolute execution of the 7-stage analysis logic.
         """
+        self.logger.info("=====================================")
+        self.logger.info(f"STARTING  ANALYSIS: {project_name}")
+        self.logger.info("=====================================")
+
+        if seed is not None:
+            self._set_deterministic_seed(seed=seed)
+        else:
+            self.logger.warning("No deterministic seed provided. Monte Carlo execution will be fully stochastic.")
+
         self.current_offset = offset
         safe_mut_dict: Dict[str, List[str]] = mutational_dict if mutational_dict is not None else {}
         safe_target_res: List[int] = target_residues if target_residues is not None else []
-
-        self.logger.info("===================================================")
-        self.logger.info(f"STARTING FULL EPISTATIC & ATTENTION ANALYSIS: {project_name}")
-        self.logger.info("===================================================")
 
         self._setup_directories(project_name, base_dir)
 
@@ -692,31 +754,3 @@ class AllostericNetworkAnalyzer:
                 df_diff.to_csv(os.path.join(self.analytics_dir, f"Differential_Attention_{project_name}_{state}.csv"),
                                index=False)
                 self.logger.info(f"      -> Differential metrics stabilized and saved for {state}.")
-
-# =====================================================================
-# USAGE TEMPLATE / INDEPENDENT EXECUTION BLOCK
-# =====================================================================
-"""
-This module is designed to be imported as a standalone bioinformatic library.
-To execute the pipeline, create a dedicated entry script (e.g., run_analysis.py)
-and instantiate the analytical environment using the following template:
-
-from allosteric_network_analyzer import AllostericNetworkAnalyzer
-
-if __name__ == "__main__":
-    analyzer = AllostericNetworkAnalyzer()
-
-    # Define your biological parameters
-    analyzer.execute_pipeline(
-        project_name="Target_Name",         # e.g., "EGFR"
-        pdb_id="XXXX",                      # e.g., "2GS2"
-        chain="A",
-        canonical_sequence="SEQ...",        # Insert continuous 1D amino acid string
-        offset=0,                           # Shift to map 0-indexed array to PDB numbering
-        mutational_dict={
-            "Mutant_1": ["L858R"],          # In silico perturbations (Optional)
-        },
-        target_residues=[858, 790, 766],    # Nodes for directed epistatic & attention sensitivity
-        base_dir="."                        # Directory for data serialization
-    )
-"""
