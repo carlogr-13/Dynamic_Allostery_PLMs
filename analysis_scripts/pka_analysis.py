@@ -2,13 +2,9 @@ import os
 import logging
 import sys
 
-# Import the orchestrator class from the main library
-try:
-    from allosteric_network_analyzer import AllostericNetworkAnalyzer
-except ImportError:
-    logging.error("Failed to locate the module 'allosteric_network_analyzer.py'. "
-                  "Ensure the master script is in the same directory or within the PYTHONPATH.")
-    sys.exit(1)
+# Import the orchestrator class and the full module from the main library
+import allosteric_network_analyzer
+from allosteric_network_analyzer import AllostericNetworkAnalyzer
 
 # Scientific logging configuration for the execution layer
 logging.basicConfig(
@@ -41,10 +37,8 @@ def main() -> None:
         "I150A": ["I150A"]
     }
 
-    # 4. Dynamic Master Directory Configuration
-    # Guarantees absolute path routing for all serialized analytics and scientific plots
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
+    # 4. Directory Configuration
+    project_root = os.path.dirname(os.path.abspath(str(allosteric_network_analyzer.__file__)))
     master_dir = os.path.join(project_root, f"Data_{project_name}")
     os.makedirs(master_dir, exist_ok=True)
 
@@ -68,8 +62,8 @@ def main() -> None:
             mutational_dict=mutational_dict,
             offset=offset,
             target_residues=[57, 70, 95, 106, 128, 164, 172, 173, 174, 185, 220, 222, 227, 231],
-            base_dir=master_dir,  # Forces absolute routing
-            seed=42  # Or None
+            seed=42,  # Or None
+            base_dir=master_dir
         )
 
         logger.info(f"Execution for system {project_name} completed.")
