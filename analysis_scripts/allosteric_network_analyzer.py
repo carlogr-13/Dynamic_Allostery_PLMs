@@ -6,7 +6,7 @@ using Protein Language Models (ESM-2) and Maximum Spanning Tree (MST) Graph Theo
 
 1. Spatial Scaffold Curation (PDB purification)
 2. Genetic Microstate Generation (canonical FASTA sequence and in silico mutagenesis)
-3. Epistatic Inference Engine (ESM-2 Jacobian Tensors via JSD)
+3. Epistatic Inference Engine (ESM-2 Mutational Sensitivity Tensors via JSD)
 4. MST Topological Extraction (Graph Centrality with absolute PDB indexing and AA mapping)
 5. High-Res CGO Topology Compilation (PyMOL rendering)
 6. Quantitative Analytics (Long-range epistasis and target sensitivity profiling)
@@ -21,17 +21,17 @@ if __name__ == "__main__":
 
     # Define your biological parameters
     analyzer.execute_pipeline(
-        project_name="Target_Name",         # e.g., "EGFR"
-        pdb_id="XXXX",                      # e.g., "2GS2"
-        chain="A",
+        project_name="Target_Name",         # e.g., "PKA"
+        pdb_id="XXXX",                      # e.g., "1ATP"
+        chain="X",                          # e.g., "E"
         canonical_sequence="SEQ...",        # Insert continuous 1D amino acid string
         offset=0,                           # Shift to map 0-indexed array to PDB numbering
         mutational_dict={
-            "Mutant_1": ["L858R"],          # In silico perturbations (Optional)
+            "Mutant_1": ["I150A"],          # In silico perturbations (Optional)
         },
-        target_residues=[858, 790, 766],    # Nodes for directed epistatic & attention sensitivity
+        target_residues=[50, 75, 231],    # Nodes for directed epistatic & attention sensitivity
+        seed=42 (or None),
         base_dir="."                        # Directory for data serialization
-        seed=42/None
     )
 
  Dependencies
@@ -113,9 +113,10 @@ class ChainAndProteinSelect(Select):
 # =====================================================================
 class AllostericNetworkAnalyzer:
     """
-    Unified class orchestrating the complete allosteric network analysis workflow.
-    It manages dynamic directory topology, structural parsing, language model
-    inference, graph theory calculations, 3D PyMOL compilations, and quantitative data extraction.
+    Unified class orchestrating the complete dynamic allosteric network workflow.
+    It manages dynamic directory topology, spatial scaffold curation, mutational
+    sensitivity inference via ESM-2, MST graph theory topology, 3D PyMOL compilations,
+    and differential attention deconvolution.
     """
 
     def __init__(self) -> None:
@@ -218,12 +219,12 @@ class AllostericNetworkAnalyzer:
         parser = PDBParser(QUIET=True)
 
         try:
-            # Parse the raw Euclidean coordinates into a hierarchical structure
+            # Parse the raw crystallographic coordinates into a hierarchical structure
             structure = parser.get_structure(project_name, raw_pdb_path)
             io = PDBIO()
             io.set_structure(structure)
 
-            # Isolate the target peptidic chain and discard heteroatoms
+            # Isolate the target peptidic chain and discard heteroatoms/solvent
             io.save(clean_path, ChainAndProteinSelect(target_chain=chain))
         except Exception as e:
             self.logger.error(f"Crystallographic parsing failed: {e}")
@@ -244,6 +245,7 @@ class AllostericNetworkAnalyzer:
 
             for mut in mutations:
                 wt_aa, pos, mut_aa = mut[0], int(mut[1:-1]), mut[-1]
+                # Transform biological PDB numbering to 0-indexed Python array
                 rel_idx = pos - 1 - offset
                 seq_list[rel_idx] = mut_aa
 
@@ -263,7 +265,7 @@ class AllostericNetworkAnalyzer:
             return
 
         all_exist = all(
-            os.path.exists(os.path.join(self.tensor_dir, f"Jacobian_{os.path.basename(fp).replace('.fasta', '')}.npy"))
+            os.path.exists(os.path.join(self.tensor_dir, f"EpistaticTensor_{os.path.basename(fp).replace('.fasta', '')}.npy"))
             for fp in fasta_files)
         if all_exist:
             self.logger.info("   -> All epistatic tensors already exist. Skipping ESM-2 model initialization.")
@@ -281,7 +283,7 @@ class AllostericNetworkAnalyzer:
 
         for file_path in fasta_files:
             filename = os.path.basename(file_path).replace(".fasta", "")
-            out_tensor = os.path.join(self.tensor_dir, f"Jacobian_{filename}.npy")
+            out_tensor = os.path.join(self.tensor_dir, f"EpistaticTensor_{filename}.npy")
             if os.path.exists(out_tensor):
                 continue
 
@@ -290,8 +292,8 @@ class AllostericNetworkAnalyzer:
                 seq = "".join([line.strip() for line in f.readlines() if not line.startswith(">")])
 
             seq_len = len(seq)
-            # Initialize the symmetric Jacobian matrix (N x N) for epistatic coupling
-            jacobian = np.zeros((seq_len, seq_len))
+            # Initialize the directional mutational sensitivity matrix (N x N)
+            epistatic_tensor = np.zeros((seq_len, seq_len))
             data = [("WT", seq)]
             _, _, batch_tokens = batch_converter_func(data)
             batch_tokens = batch_tokens.to(device)
@@ -322,22 +324,22 @@ class AllostericNetworkAnalyzer:
                     logits_mut = res_mut["logits"][0, 1:seq_len + 1, :].cpu().numpy()
                     probs_mut = np.exp(logits_mut) / np.sum(np.exp(logits_mut), axis=-1, keepdims=True)
 
-                # Compute Jensen-Shannon Divergence (JSD) to quantify evolutionary covariance
+                # Compute Jensen-Shannon Divergence (JSD) to quantify directional epistatic perturbation
                 # The 1e-10 constant prevents log(0) computational underflow errors.
                 m = 0.5 * (probs_wt + probs_mut)
-                kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1) #(ec. 2 for WT)
-                kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1) #(ec. 2 for mut)
-                jacobian[i, :] = 0.5 * (kl_wt_m + kl_mut_m) # (ec. 1)
+                kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1) #(eq. 2 for WT)
+                kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1) #(eq. 2 for mut)
+                epistatic_tensor[i, :] = 0.5 * (kl_wt_m + kl_mut_m) # (eq. 1)
 
-            np.save(out_tensor, jacobian)
+            np.save(out_tensor, epistatic_tensor)
 
     # -----------------------------------------------------------------
     # STAGE 4, 5 & 6: MST, CGO, AND QUANTITATIVE ANALYTICS
     # -----------------------------------------------------------------
     def _extract_mst(self, project_name: str, offset: int) -> None:
         self.logger.info("STAGE 4: Extracting Maximum Spanning Tree Topologies (Absolute Indexing)")
-        for file_path in glob.glob(os.path.join(self.tensor_dir, f"Jacobian_{project_name}_*.npy")):
-            state = os.path.basename(file_path).replace(f"Jacobian_{project_name}_", "").replace(".npy", "")
+        for file_path in glob.glob(os.path.join(self.tensor_dir, f"EpistaticTensor_{project_name}_*.npy")):
+            state = os.path.basename(file_path).replace(f"EpistaticTensor_{project_name}_", "").replace(".npy", "")
 
             fasta_path = os.path.join(self.fasta_dir, f"{project_name}_{state}.fasta")
             if not os.path.exists(fasta_path):
@@ -347,26 +349,26 @@ class AllostericNetworkAnalyzer:
             with open(fasta_path, 'r') as f:
                 seq = "".join([line.strip() for line in f.readlines() if not line.startswith(">")])
 
-            jacobian = np.load(file_path)
+            epistatic_tensor = np.load(file_path)
 
             # Symmetrize the tensor to construct an undirected graph. This assumes the
             # biophysical principle of allosteric reciprocity (the energetic coupling
-            # pathway from node i to j is identical to j to i in equilibrium). (ec. 3)
-            sym_jacobian = (jacobian + jacobian.T) / 2.0
+            # pathway from node i to j is identical to j to i in equilibrium). (Eq. 3)
+            sym_epistatic_tensor = (epistatic_tensor + epistatic_tensor.T) / 2.0
 
             # Eliminate self-loops to prevent artificial inflation of node centrality.
-            np.fill_diagonal(sym_jacobian, 0.0)
+            np.fill_diagonal(sym_epistatic_tensor, 0.0)
 
             graph = nx.Graph()
-            graph.add_nodes_from(range(jacobian.shape[0]))
-            rows, cols = np.where(sym_jacobian > 0)
+            graph.add_nodes_from(range(epistatic_tensor.shape[0]))
+            rows, cols = np.where(sym_epistatic_tensor> 0)
             for i, j in zip(rows, cols):
                 if i < j:
-                    graph.add_edge(i, j, weight=sym_jacobian[i, j])
+                    graph.add_edge(i, j, weight=sym_epistatic_tensor[i, j])
 
             if graph.number_of_edges() > 0:
                 mst = nx.maximum_spanning_tree(graph, weight='weight')
-                centrality = nx.betweenness_centrality(mst, normalized=True) # (ec. 4)
+                centrality = nx.betweenness_centrality(mst, normalized=True) # (eq. 4)
 
                 nodes_data = [{"Residue_PDB": k + 1 + offset,
                                "Amino_Acid": seq[k],
@@ -467,29 +469,29 @@ class AllostericNetworkAnalyzer:
         coords = {res.id[1] - 1 - offset: res['CA'].get_coord() for res in structure[0][chain] if
                   'CA' in res and res.id[0] == ' '}
 
-        for file_path in glob.glob(os.path.join(self.tensor_dir, f"Jacobian_{project_name}_*.npy")):
-            state = os.path.basename(file_path).replace(f"Jacobian_{project_name}_", "").replace(".npy", "")
+        for file_path in glob.glob(os.path.join(self.tensor_dir, f"EpistaticTensor_{project_name}_*.npy")):
+            state = os.path.basename(file_path).replace(f"EpistaticTensor_{project_name}_", "").replace(".npy", "")
 
             fasta_path = os.path.join(self.fasta_dir, f"{project_name}_{state}.fasta")
             with open(fasta_path, 'r') as f:
                 seq = "".join([line.strip() for line in f.readlines() if not line.startswith(">")])
 
-            jacobian = np.load(file_path)
+            epistatic_tensor = np.load(file_path)
 
             for target in target_residues:
                 target_rel_idx = target - 1 - offset
-                if 0 <= target_rel_idx < jacobian.shape[0]:
-                    df_target = pd.DataFrame({"Residue_PDB": np.arange(jacobian.shape[1]) + 1 + offset,
+                if 0 <= target_rel_idx < epistatic_tensor.shape[0]:
+                    df_target = pd.DataFrame({"Residue_PDB": np.arange(epistatic_tensor.shape[1]) + 1 + offset,
                                               "Amino_Acid": list(seq),
-                                              "Epistatic_Coupling_JSD": jacobian[target_rel_idx, :]})
+                                              "Epistatic_Coupling_JSD": epistatic_tensor[target_rel_idx, :]})
                     df_target = df_target[df_target["Residue_PDB"] != target].sort_values(
                         by="Epistatic_Coupling_JSD", ascending=False)
                     df_target.to_csv(os.path.join(self.analytics_dir, f"DirectedSensitivity_{target}_{state}.csv"),
                                      index=False)
 
             long_range_data = []
-            sym_jacobian = (jacobian + jacobian.T) / 2.0
-            rows, cols = np.triu_indices(sym_jacobian.shape[0], k=1)
+            sym_epsitatic_tensor = (epistatic_tensor + epistatic_tensor.T) / 2.0
+            rows, cols = np.triu_indices(sym_epsitatic_tensor.shape[0], k=1)
             for u, v in zip(rows, cols):
                 abs_u = u + 1 + offset
                 abs_v = v + 1 + offset
@@ -502,7 +504,7 @@ class AllostericNetworkAnalyzer:
                         long_range_data.append(
                             {"Source_PDB": abs_u, "Source_AA": seq[u],
                              "Target_PDB": abs_v, "Target_AA": seq[v],
-                             "Distance_Angstroms": dist, "Epistatic_Coupling_JSD": sym_jacobian[u, v]})
+                             "Distance_Angstroms": dist, "Epistatic_Coupling_JSD": sym_epsitatic_tensor[u, v]})
 
             if long_range_data:
                 pd.DataFrame(long_range_data).sort_values(by="Epistatic_Coupling_JSD", ascending=False).to_csv(
@@ -553,7 +555,7 @@ class AllostericNetworkAnalyzer:
                     # Vectorization Level 1: Directional summation of masked attention
                     col_sums = torch.sum(attention * mask, dim=0)
 
-                    # Direct computation of the attention coupled to the allosteric sites
+                    # Direct computation of the attention coupled to the allosteric sites (eq. 5)
                     w_allo = torch.sum(col_sums[allo_sites_tensor]).item()
 
                     # Extraction of the background noise summation pool
@@ -570,7 +572,7 @@ class AllostericNetworkAnalyzer:
                     expected_random = torch.mean(random_w_tensor).item()
                     std_random = torch.std(random_w_tensor).item()
 
-                    # Inference of impact metrics (ec. 5 and ec. 6)
+                    # Inference of impact metrics (eq. 6,7)
                     impact = w_allo / expected_random if expected_random > 0 else 0.0
                     snr = (w_allo - expected_random) / (std_random + 1e-10)
 
@@ -607,7 +609,7 @@ class AllostericNetworkAnalyzer:
         """
         target_device = attention_maps_wt.device
 
-        # Algebraic subtraction and absolute value extraction of the attention tensor (ec. 7)
+        # Algebraic subtraction and absolute value extraction of the attention tensor (eq. 8)
         delta_attention = torch.abs(attention_maps_mut[0] - attention_maps_wt[0])
         n_allo_sites = len(allo_sites_relative)
         num_layers, num_heads, seq_len, _ = delta_attention.shape
