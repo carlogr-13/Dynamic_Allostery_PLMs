@@ -265,13 +265,21 @@ class AllostericNetworkAnalyzer:
             return
 
         all_exist = all(
-            os.path.exists(os.path.join(self.tensor_dir, f"EpistaticTensor_{os.path.basename(fp).replace('.fasta', '')}.npy"))
+            os.path.exists(
+                os.path.join(self.tensor_dir, f"EpistaticTensor_{os.path.basename(fp).replace('.fasta', '')}.npy"))
             for fp in fasta_files)
         if all_exist:
             self.logger.info("   -> All epistatic tensors already exist. Skipping ESM-2 model initialization.")
             return
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Multi-platform Hardware Allocation (NVIDIA CUDA -> Apple MPS -> CPU)
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+
         self.logger.info(f"   -> Loading PLM onto hardware: {device}...")
 
         # Initialize the ESM-2 Transformer (650M parameter variant, 33 layer)
@@ -327,9 +335,9 @@ class AllostericNetworkAnalyzer:
                 # Compute Jensen-Shannon Divergence (JSD) to quantify directional epistatic perturbation
                 # The 1e-10 constant prevents log(0) computational underflow errors.
                 m = 0.5 * (probs_wt + probs_mut)
-                kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1) #(eq. 2 for WT)
-                kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1) #(eq. 2 for mut)
-                epistatic_tensor[i, :] = 0.5 * (kl_wt_m + kl_mut_m) # (eq. 1)
+                kl_wt_m = np.sum(probs_wt * np.log(probs_wt / (m + 1e-10)), axis=-1)  # (eq. 2 for WT)
+                kl_mut_m = np.sum(probs_mut * np.log(probs_mut / (m + 1e-10)), axis=-1)  # (eq. 2 for mut)
+                epistatic_tensor[i, :] = 0.5 * (kl_wt_m + kl_mut_m)  # (eq. 1)
 
             np.save(out_tensor, epistatic_tensor)
 
