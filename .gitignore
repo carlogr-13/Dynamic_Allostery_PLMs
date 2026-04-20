@@ -6,12 +6,12 @@
 .venv/
 __pycache__/
 
-# Exclusión de datos pesados (Para que el repositorio no colapse)
+# Exclusión de datos  (Para que el repositorio no colapse)
 data/
 *.npy
 *.csv
 *.pdb
 *.pml
-*.tiff
-*.pdf
-*.png
+*.fasta
+*.ent
+*.pt
