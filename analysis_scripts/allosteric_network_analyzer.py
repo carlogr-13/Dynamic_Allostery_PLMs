@@ -54,6 +54,8 @@ if __name__ == "__main__":
  Dong et al. (2024). Allo-Allo: Data-efficient prediction of allosteric sites.
  bioRxiv. DOI: https://doi.org/10.1101/2024.09.28.615583
 
+ PLMs_Dynamic_Allostery. https://github.com/amoyag/PLMs_Dynamic_Allostery
+
  GPCRAllostericAnalysis. https://github.com/jdlg-42/GPCRAllostericAnalysis
 
 """
