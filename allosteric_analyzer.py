@@ -121,7 +121,7 @@ class AllosticHeadAnalyzer:
         with torch.no_grad():
             results = self.model(batch_tokens, repr_layers=[self.num_layers], return_contacts=True)
 
-        attentions = results["attentions"]
+        attentions = results["attentions"][..., 1:-1, 1:-1] # En el script antiguo no se eliminaban los tokens <cls> y <eos>
         return attentions
 
     # This function is replaced with the new version below
