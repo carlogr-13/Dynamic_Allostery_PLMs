@@ -1,16 +1,8 @@
 import logging
 import warnings
-import numpy as np
-import pandas as pd
-import networkx as nx
-import torch
-from pathlib import Path
-from tqdm import tqdm
-from typing import Dict, List, Tuple, Optional, Any
-from scipy.spatial.distance import cdist
-from Bio.PDB import PDBList, PDBParser, PDBIO, Select
+from typing import Any
+from Bio.PDB import Select
 from Bio.PDB.PDBExceptions import PDBConstructionWarning
-from Bio.Data import IUPACData
 from dynamic_allostery_esm2 import AllostericNetworkAnalyzer
 
 

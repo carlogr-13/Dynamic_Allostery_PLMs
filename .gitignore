@@ -1,17 +1,28 @@
-# Exclusión del entorno de PyCharm
-.idea/
-*.iml
-
-# Exclusión de entornos virtuales y cachés de Python
-.venv/
-__pycache__/
-
-# Exclusión de datos  (Para que el repositorio no colapse)
-data/
-*.npy
-*.csv
-*.pdb
-*.pml
-*.fasta
-*.ent
 *.pt
+data/processed/*.pt
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+.ipynb_checkpoints/
+
+env/
+venv/
+.env/
+.venv/
+miniconda3/
+
+.idea/
+.vscode/
+*.swp
+*.swo
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

@@ -16,18 +16,20 @@ attention heads are most sensitive to allosteric sites.
 
 Author
 ------
-[Your Name / Your Institution]
+Carlos González Ruiz / Universidad de Málaga
 
 References
 ----------
-
+1. Dong et al. (2024). Allo-Allo: Data-efficient prediction of allosteric sites. *bioRxiv*. DOI: https://doi.org/10.1101/2024.09.28.615583
+2. Trenfield & Lin (2025). Sparse networks of conformational fluctuations communicate signals within proteins. *bioRxiv*. DOI: https://doi.org/10.1101/2025.05.28.656549
+3. Allosteric Analyzer: https://github.com/amoyag/PLMs_Dynamic_Allostery & https://github.com/jdlg-42/GPCRAllostericAnalysis
+4. ESM-2: https://github.com/facebookresearch/esm
 
 Date: 2026
 """
 
 import logging
 import warnings
-import argparse
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -38,7 +40,6 @@ from typing import Dict, List, Tuple, Optional, Any
 from scipy.spatial.distance import cdist
 from Bio.PDB import PDBList, PDBParser, PDBIO, Select
 from Bio.PDB.PDBExceptions import PDBConstructionWarning
-from Bio.Data import IUPACData
 
 try:
     import esm
@@ -507,7 +508,7 @@ class AllostericNetworkAnalyzer:
                 f"cmd.load(r'{Path(pdb_path).resolve()}', '{project_name}_scaffold')",
                 f"cmd.show_as('cartoon', '{project_name}_scaffold')",
                 f"cmd.color('gray80', '{project_name}_scaffold')",
-                f"cmd.set('cartoon_transparency', 0.85, '{project_name}_scaffold')",
+                f"cmd.set('cartoon_transparency', 0.55, '{project_name}_scaffold')",
                 "obj = []"
             ]
 
@@ -579,36 +580,36 @@ class AllostericNetworkAnalyzer:
 # =====================================================================
 # COMMAND LINE INTERFACE (CLI)
 # =====================================================================
-def main():
-    parser = argparse.ArgumentParser(
-        description="Dynamic Allosteric Network Analyzer based on PLMs (ESM-2).",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument("--project", type=str, default="PKA_Allostery", help="Name of the analysis project.")
-    parser.add_argument("--pdb", type=str, default="1ATP", help="PDB ID to download as structural scaffold.")
-    parser.add_argument("--chain", type=str, default="E", help="Target chain from the PDB structure.")
-    parser.add_argument("--offset", type=int, default=14, help="Sequence offset relative to PDB numbering.")
-    parser.add_argument("--seed", type=int, default=7355608, help="Deterministic seed for Monte Carlo sampling.")
+#def main():
+#    parser = argparse.ArgumentParser(
+#        description="Dynamic Allosteric Network Analyzer based on PLMs (ESM-2).",
+#        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+#    )
+#    parser.add_argument("--project", type=str, default="PKA_Allostery", help="Name of the analysis project.")
+#    parser.add_argument("--pdb", type=str, default="1ATP", help="PDB ID to download as structural scaffold.")
+#    parser.add_argument("--chain", type=str, default="E", help="Target chain from the PDB structure.")
+#    parser.add_argument("--offset", type=int, default=14, help="Sequence offset relative to PDB numbering.")
+#    parser.add_argument("--seed", type=int, default=7355608, help="Deterministic seed for Monte Carlo sampling.")
 
-    args = parser.parse_args()
+#    args = parser.parse_args()
 
     # Biological defaults for PKA if executed without custom arguments
-    pka_sequence = "VKEFLAKAKEDFLKKWETPSQNTAQLDQFDRIKTLGTGSFGRVMLVKHKESGNHYAMKILDKQKVVKLKQIEHTLNEKRILQAVNFPFLVKLEFSFKDNSNLYMVMEYVAGGEMFSHLRRIGRFSEPHARFYAAQIVLTFEYLHSLDLIYRDLKPENLLIDQQGYIQVTDFGFAKRVKGRTWTLCGTPEYLAPEIILSKGYNKAVDWWALGVLIYEMAAGYPPFFADQPIQIYEKIVSGKVRFPSHFSSDLKDLLRNLLQVDLTKRFGNLKNGVNDIKNHKWFATTDWIAIYQRKVEAPFIPKFKGPGDTSNFDDYEEEEIRVSINEKCGKEFTE"
-    target_site = [133, 134, 204, 280, 327, 328, 329, 330]
-    mutations = {"I150A": [["I", 150, "A"]]}
+#    pka_sequence = "VKEFLAKAKEDFLKKWETPSQNTAQLDQFDRIKTLGTGSFGRVMLVKHKESGNHYAMKILDKQKVVKLKQIEHTLNEKRILQAVNFPFLVKLEFSFKDNSNLYMVMEYVAGGEMFSHLRRIGRFSEPHARFYAAQIVLTFEYLHSLDLIYRDLKPENLLIDQQGYIQVTDFGFAKRVKGRTWTLCGTPEYLAPEIILSKGYNKAVDWWALGVLIYEMAAGYPPFFADQPIQIYEKIVSGKVRFPSHFSSDLKDLLRNLLQVDLTKRFGNLKNGVNDIKNHKWFATTDWIAIYQRKVEAPFIPKFKGPGDTSNFDDYEEEEIRVSINEKCGKEFTE"
+#    target_site = [133, 134, 204, 280, 327, 328, 329, 330]
+#    mutations = {"I150A": [["I", 150, "A"]]}
 
-    analyzer = AllostericNetworkAnalyzer()
-    analyzer.execute_pipeline(
-        project_name=args.project,
-        pdb_id=args.pdb,
-        chain=args.chain,
-        canonical_sequence=pka_sequence,
-        offset=args.offset,
-        target_residues=target_site,
-        mutational_dict=mutations,
-        seed=args.seed
-    )
+#    analyzer = AllostericNetworkAnalyzer()
+#    analyzer.execute_pipeline(
+#        project_name=args.project,
+#        pdb_id=args.pdb,
+#        chain=args.chain,
+#        canonical_sequence=pka_sequence,
+#        offset=args.offset,
+#        target_residues=target_site,
+#        mutational_dict=mutations,
+#        seed=args.seed
+#    )
 
 
-if __name__ == "__main__":
-    main()
+#if __name__ == "__main__":
+#    main()

@@ -21,7 +21,7 @@ AllosticHeadAnalyzer:
 
 Example
 -------
->>> from allosteric_analyzer import AllosticHeadAnalyzer
+>>> from reference_code.allosteric_analyzer import AllosticHeadAnalyzer
 >>>
 >>> # Initialize analyzer
 >>> analyzer = AllosticHeadAnalyzer(threshold=0.3)
