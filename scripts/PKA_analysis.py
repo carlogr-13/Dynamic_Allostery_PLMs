@@ -70,3 +70,10 @@ if __name__ == "__main__":
         mutational_dict=mutations,
         seed=7355608
     )
+
+# =====================================================================
+# REFERENCES
+# =====================================================================
+#
+# 1. Madan et al. (2023). The “violin model”: Looking at community networks for dynamic allostery. The Journal Of Chemical Physics. DOI: https://doi.org/10.1063/5.0138175
+# 2. Taylor & Kornev (2010). Protein kinases: evolution of dynamic regulatory proteins. Trends In Biochemical Sciences. DOI: https://doi.org/10.1016/j.tibs.2010.09.006

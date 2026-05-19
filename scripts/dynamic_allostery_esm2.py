@@ -89,7 +89,7 @@ class AllostericNetworkAnalyzer:
     Phase 1: Zero-shot ESM-2 inference.
     Phase 2: Statistical head filtering via Monte Carlo null model (Dong et al., 2024).
     Phase 3: Consensus matrix construction, symmetrization, and covalent/sequential purge.
-    Phase 4: Spatial mask (<12 Å), Thermodynamic distance scaling, and MST extraction.
+    Phase 4: Spatial mask (<12 Å), Thermodynamic distance scaling, and MST extraction (Trenfield & Lin, 2025).
     Phase 5: Topological centrality calculation and PyMOL CGO rendering.
     """
 
@@ -435,7 +435,7 @@ class AllostericNetworkAnalyzer:
                 for j in range(i + 1, seq_len):
                     prob = physical_matrix[i, j]
                     if prob > 0:
-                        # Shannon/Thermodynamic distance conversion
+                        # Distance conversion
                         thermo_dist = -np.log(prob)
                         G.add_edge(i, j, weight=thermo_dist, probability=prob)
 
@@ -594,7 +594,7 @@ class AllostericNetworkAnalyzer:
 #    args = parser.parse_args()
 
     # Biological defaults for PKA if executed without custom arguments
-#    pka_sequence = "VKEFLAKAKEDFLKKWETPSQNTAQLDQFDRIKTLGTGSFGRVMLVKHKESGNHYAMKILDKQKVVKLKQIEHTLNEKRILQAVNFPFLVKLEFSFKDNSNLYMVMEYVAGGEMFSHLRRIGRFSEPHARFYAAQIVLTFEYLHSLDLIYRDLKPENLLIDQQGYIQVTDFGFAKRVKGRTWTLCGTPEYLAPEIILSKGYNKAVDWWALGVLIYEMAAGYPPFFADQPIQIYEKIVSGKVRFPSHFSSDLKDLLRNLLQVDLTKRFGNLKNGVNDIKNHKWFATTDWIAIYQRKVEAPFIPKFKGPGDTSNFDDYEEEEIRVSINEKCGKEFTE"
+#    pka_sequence = "VKEFLAKAKEDFLK...EIRVSINEKCGKEFTE"
 #    target_site = [133, 134, 204, 280, 327, 328, 329, 330]
 #    mutations = {"I150A": [["I", 150, "A"]]}
 
